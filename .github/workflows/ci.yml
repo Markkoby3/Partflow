@@ -59,7 +59,14 @@ jobs:
           cache: pip
           cache-dependency-path: services/reorder-service/pyproject.toml
       - run: pip install -e ".[dev]"
-      - run: pytest -p no:warnings
+      - name: pytest
+        run: |
+          set -o pipefail
+          # Failures are also emitted as annotations so they show on the PR and run summary.
+          pytest -p no:warnings -rf --tb=short 2>&1 | tee pytest.log || {
+            grep -E "^(FAILED|ERROR)|^E " pytest.log | head -20 | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
       - name: Policy backtest
         run: python scripts/backtest.py --seed 7
 
