@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-api
+  labels: { app: inventory-api }
+spec:
+  # Several replicas are safe: the outbox relay elects one publisher at a time
+  # with a Postgres advisory lock, so event order is preserved.
+  replicas: 3
+  selector:
+    matchLabels: { app: inventory-api }
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels: { app: inventory-api }
+    spec:
+      securityContext: { runAsNonRoot: true }
+      containers:
+        - name: api
+          image: partflow/inventory-api
+          ports: [{ name: http, containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: partflow-config }
+            - secretRef: { name: partflow-secrets }
+          env:
+            - { name: OTEL_SERVICE_NAME, value: inventory-api }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 384Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-api
+spec:
+  selector: { app: inventory-api }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inventory-api
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: inventory-api }
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: inventory-api
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app: inventory-api }

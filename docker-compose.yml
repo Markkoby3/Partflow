@@ -1,0 +1,118 @@
+# Full local stack:  docker compose up --build
+#   Dashboard   http://localhost:5173
+#   Grafana     http://localhost:3000   (PartFlow folder; Explore for Tempo traces and Loki logs)
+#   API         http://localhost:8080   Reorder API http://localhost:8090
+# Then load demo data:  docker compose run --rm seed
+name: partflow
+
+x-otel: &otel
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+  OTEL_METRIC_EXPORT_INTERVAL: "10000"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: partflow
+      POSTGRES_PASSWORD: partflow
+      POSTGRES_DB: partflow
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U partflow"]
+      interval: 5s
+      retries: 10
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+    ports: ["19092:19092"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      retries: 20
+
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+    depends_on:
+      redpanda: { condition: service_healthy }
+    entrypoint: ["rpk", "topic", "create", "partflow.inventory", "--partitions", "6", "-X", "brokers=redpanda:9092"]
+    restart: "no"
+
+  mongo:
+    image: mongo:7
+    ports: ["27017:27017"]
+    volumes: [mongodata:/data/db]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      retries: 10
+
+  lgtm:
+    image: grafana/otel-lgtm:0.8.1
+    ports: ["3000:3000", "4317:4317", "4318:4318"]
+    volumes:
+      - ./observability/grafana/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/partflow.yaml:ro
+      - ./observability/grafana/dashboards:/otel-lgtm/partflow-dashboards:ro
+
+  inventory-api:
+    build: ./services/inventory-api
+    environment:
+      <<: *otel
+      DATABASE_URL: postgres://partflow:partflow@postgres:5432/partflow
+      KAFKA_BROKERS: redpanda:9092
+      OTEL_SERVICE_NAME: inventory-api
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda-init: { condition: service_completed_successfully }
+
+  reorder-consumer:
+    build: ./services/reorder-service
+    command: ["python", "-m", "reorder.consumer"]
+    environment:
+      <<: *otel
+      MONGO_URL: mongodb://mongo:27017
+      KAFKA_BROKERS: redpanda:9092
+      OTEL_SERVICE_NAME: reorder-consumer
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      mongo: { condition: service_healthy }
+      redpanda-init: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  reorder-api:
+    build: ./services/reorder-service
+    environment:
+      <<: *otel
+      MONGO_URL: mongodb://mongo:27017
+      INVENTORY_API_URL: http://inventory-api:8080
+      OTEL_SERVICE_NAME: reorder-api
+    ports: ["8090:8090"]
+    depends_on:
+      mongo: { condition: service_healthy }
+
+  web:
+    build: ./web
+    ports: ["5173:80"]
+    depends_on: [inventory-api, reorder-api]
+
+  seed:
+    image: node:22-alpine
+    profiles: [tools]
+    working_dir: /app
+    volumes: ["./services/inventory-api:/app"]
+    environment:
+      INVENTORY_URL: http://inventory-api:8080
+    command: ["sh", "-c", "npx --yes tsx scripts/seed.ts"]
+    depends_on: [inventory-api]
+
+volumes:
+  pgdata:
+  mongodata:

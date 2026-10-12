@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: partflow-config
+data:
+  KAFKA_BROKERS: kafka-bootstrap.data.svc:9092
+  INVENTORY_TOPIC: partflow.inventory
+  INVENTORY_API_URL: http://inventory-api:8080
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability.svc:4318
+---
+# Example only: create the real Secret from your secret manager, not from git.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: partflow-secrets
+type: Opaque
+stringData:
+  DATABASE_URL: postgres://partflow:change-me@postgres.data.svc:5432/partflow
+  MONGO_URL: mongodb://mongo.data.svc:27017
+  ANTHROPIC_API_KEY: ""

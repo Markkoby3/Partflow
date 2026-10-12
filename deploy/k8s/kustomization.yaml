@@ -1,0 +1,22 @@
+# kubectl apply -k deploy/k8s
+# Postgres, Kafka and MongoDB are expected as managed services; point the
+# ConfigMap and Secret at them. Images are tagged by CI (see .github/workflows).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: partflow
+resources:
+  - namespace.yaml
+  - config.yaml
+  - inventory-api.yaml
+  - reorder.yaml
+  - web.yaml
+images:
+  - name: partflow/inventory-api
+    newName: ghcr.io/markkoby3/partflow-inventory-api
+    newTag: latest
+  - name: partflow/reorder-service
+    newName: ghcr.io/markkoby3/partflow-reorder-service
+    newTag: latest
+  - name: partflow/web
+    newName: ghcr.io/markkoby3/partflow-web
+    newTag: latest
